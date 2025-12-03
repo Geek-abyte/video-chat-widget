@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>WebRTC Video Call</title>
+
+  <!-- <script src="https://videowidget.sozodigicare.com/socket.io/socket.io.js"></script>
+  <script src="https://videowidget.sozodigicare.com/webrtc-widget.js" defer></script> -->
+  <script src="http://localhost:4000/socket.io/socket.io.js"></script>
+  <script src="http://localhost:4000/webrtc-widget.js" defer></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #videoWrapper {
+      height: 100%;
+    }
+
+    #localVideoContainer {
+        width: 150px !important;
+        height: 200px !important;
+        bottom: 5rem !important;
+        right: 4rem !important;
+      }
+
+    @media (max-width: 768px) {
+      #videoWrapper {
+        height: 100vh !important;
+        width: 100vw !important;
+        border-radius: 0 !important;
+        padding-top: 5rem !important; /* Space for parent app's name/timer overlay */
+      }
+
+      #localVideoContainer {
+        width: 100px !important;
+        height: 130px !important;
+        bottom: 5rem !important;
+        right: 2rem !important;
+      }
+    }
+  </style>
+  
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-4">
+
+  <!-- Ringing Notification -->
+  <div id="ringingIndicator" class="hidden fixed inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50 p-4 z-30">
+    <p class="text-lg font-bold mb-4">📞 Ringing...</p>
+  </div>
+
+  <!-- Video Wrapper -->
+  <div id="videoWrapper" class="relative w-full max-w-5xl aspect-video bg-black rounded-xl overflow-hidden">
+    <video id="remoteVideo" autoplay playsinline class="absolute inset-0 w-full h-full object-cover z-0 rounded-xl"></video>
+  
+  
+    <!-- Local Video PiP -->
+    <div id="localVideoContainer" class="absolute bottom-12 right-4 w-40 h-28 rounded-lg overflow-hidden border-2 border-white shadow-lg z-10">
+      <video id="localVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
+    </div>
+
+    <!-- Inside #videoWrapper -->
+    <!-- Chat Box (Docked Right) -->
+    <div id="chatBox" class="absolute top-0 left-0 w-[22rem] max-h-[80vh] md:max-h-full bg-white text-black rounded-r-xl shadow flex flex-col overflow-hidden hidden z-30">
+      <div class="flex justify-end items-center border-b p-2 bg-gray-100">
+        <button id="closeChatBtn" class="text-gray-600 hover:text-gray-900" title="Close chat" onclick="toggleChat()">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div id="messages" class="flex flex-col flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-300"></div>
+      <div class="flex items-center gap-2 p-3 border-t">
+        <label for="imageInput" class="cursor-pointer p-2 rounded-full hover:bg-gray-200 transition" title="Send Image">
+          <i data-lucide="image" class="w-6 h-6 text-gray-600"></i>
+        </label>
+        <input type="file" id="imageInput" accept="image/*" class="hidden" onchange="handleImageUpload(event)"/>
+        <input id="chatInput" type="text" placeholder="Type a message..." class="flex-1 rounded-full px-4 py-2 text-black ring-2 ring-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        <button id="sendButton" onclick="sendMessage()" class="p-2 bg-blue-600 rounded-full text-white hover:bg-blue-700">
+          <i data-lucide="send" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 z-40">
+      <!-- 4 main buttons -->
+      <button onclick="sendCallRequest()" class="bg-blue-600 p-3 rounded-full hover:bg-blue-700 transition" title="Call">
+        <i data-lucide="phone-forwarded" class="w-5 h-5"></i>
+      </button>
+      <button onclick="endCall()" class="bg-red-600 p-3 rounded-full hover:bg-red-700 transition" title="End Call">
+        <i data-lucide="phone-off" class="w-5 h-5"></i>
+      </button>
+      <button onclick="toggleMuteAudio()" class="bg-gray-700 p-3 rounded-full hover:bg-gray-800 transition" title="Toggle Mic">
+        <i data-lucide="mic" id="audioIcon" class="w-5 h-5"></i>
+      </button>
+      <button onclick="toggleMuteVideo()" class="bg-gray-700 p-3 rounded-full hover:bg-gray-800 transition" title="Toggle Camera">
+        <i data-lucide="video" id="videoIcon" class="w-5 h-5"></i>
+      </button>
+  
+      <!-- Vertical ... button -->
+      <div class="relative">
+        <button id="moreOptionsBtn" class="bg-gray-700 p-3 rounded-full hover:bg-gray-800 transition flex items-center justify-center" title="More Options">
+          <span class="text-white text-xl select-none">⋮</span>
+        </button>
+  
+        <!-- Dropdown menu -->
+        <div id="moreOptionsDropdown" class="hidden absolute bottom-full mb-2 right-0 bg-gray-800 rounded shadow-lg w-36 py-2 flex flex-col gap-2 z-30">
+          <button onclick="startAudioCall()" class="text-white px-4 py-2 hover:bg-gray-700 rounded flex items-center gap-2">
+            <i data-lucide="headphones" class="w-5 h-5"></i> Audio Call
+          </button>
+          <button id="toggleChatBtn" class="text-white px-4 py-2 hover:bg-gray-700 rounded flex items-center gap-2">
+            <i data-lucide="message-circle" class="w-5 h-5"></i> Chat
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="chatNotificationDialog" class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl p-6 shadow-lg max-w-sm w-full text-center space-y-4 relative">
+      <!-- Close button -->
+      <button id="closeChatNotification" class="absolute top-3 right-3 text-gray-500 hover:text-gray-800 text-xl font-bold focus:outline-none" aria-label="Close">
+        &times;
+      </button>
+  
+      <h2 class="text-lg font-semibold">New Message</h2>
+      <p class="text-gray-600">You’ve received a new message.</p>
+      <button id="openChatFromDialog" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Open Chat</button>
+    </div>
+  </div>
+
+  <!-- chat images full size view -->
+  <div id="imagePreviewModal" class="fixed inset-0 bg-black bg-opacity-80 hidden flex items-center justify-center z-50">
+    <button onclick="closeImagePreview()" class="absolute top-2 right-2 text-white text-xl bg-black bg-opacity-50 rounded-full px-3 py-1">&times;</button>
+    <div class="relative max-w-full max-h-full p-4">
+      <img id="previewImage" src="" alt="Preview" class="max-w-full max-h-[90vh] rounded-lg shadow-lg" />
+    </div>
+  </div>  
+  
+
+  <!-- Incoming Call Notification -->
+  <div id="incomingCall" class="hidden fixed inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50 p-4 z-30">
+    <p class="text-lg font-bold mb-4">📞 Incoming Call...</p>
+    <div class="flex gap-4">
+      <button onclick="acceptCall()" class="bg-green-500 p-3 rounded-full hover:bg-green-600 transition">
+        <i data-lucide="phone" class="w-6 h-6"></i>
+      </button>
+      <button onclick="rejectCall()" class="bg-red-500 p-3 rounded-full hover:bg-red-600 transition">
+        <i data-lucide="phone-off" class="w-6 h-6"></i>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // Toggle the dropdown menu on vertical ... button click
+    const moreOptionsBtn = document.getElementById('moreOptionsBtn');
+    const moreOptionsDropdown = document.getElementById('moreOptionsDropdown');
+    const toggleChatBtn = document.getElementById('toggleChatBtn');
+    const chatBox = document.getElementById('chatBox');
+  
+    moreOptionsBtn.addEventListener('click', () => {
+      moreOptionsDropdown.classList.toggle('hidden');
+    });
+  
+    // Hide dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!moreOptionsBtn.contains(e.target) && !moreOptionsDropdown.contains(e.target)) {
+        moreOptionsDropdown.classList.add('hidden');
+      }
+    });
+  
+    // Toggle chat box visibility when clicking chat button in dropdown
+    toggleChatBtn.addEventListener('click', () => {
+      chatBox.classList.toggle('hidden');
+      moreOptionsDropdown.classList.add('hidden'); // close dropdown after toggle
+    });
+  
+    // Optional: Press Enter in chat input sends message
+    document.getElementById('chatInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+
+  <script>
+    let webrtcInstance;
+
+    // const socket = io("https://videowidget.sozodigicare.com");
+    const socket = io("http://localhost:4000");
+
+    socket.on('connect', () => {
+        const myId = socket.id;
+        sessionStorage.setItem('mySocketId', myId);
+        console.log('My socket id:', myId);
+    });
+
+    // Listen for messages from parent app
+    window.addEventListener("message", (event) => {
+      // Handle end call confirmation
+      if (event.data?.action === "handleEndCall") {
+        handleEndCall();
+      }
+    });
+
+    window.onload = function () {
+      lucide.createIcons();
+
+      if (typeof WebRTCWidget === "undefined") {
+        console.error("WebRTCWidget is not loaded.");
+        return;
+      }
+
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const dynamicRoomId = urlParams.get("room");
+
+      if (!dynamicRoomId) {
+        alert("No Room ID provided! Please share the correct link.");
+        return;
+      }
+
+      webrtcInstance = new WebRTCWidget({
+        videoSize: 500,
+        localVideoEl: localVideo,
+        remoteVideoEl: remoteVideo,
+        backgroundColor: "#f8f9fa",
+        roomId: dynamicRoomId,
+        onCallAccepted: () => {
+          document.getElementById("ringingIndicator").classList.add("hidden");
+          updateToggleIcons();
+        },
+        onCallEnded: () => {
+          document.getElementById("ringingIndicator").classList.add("hidden");
+          document.getElementById("incomingCall").classList.add("hidden");
+          updateToggleIcons();
+        },
+        onIncomingCall: () => {
+          document.getElementById("incomingCall").classList.remove("hidden");
+        },
+        onMessage: ({ message, sender, type }) => {
+          const mySenderId = sessionStorage.getItem('mySocketId');
+          if (sender === mySenderId) return;
+
+          if (type === "image" || (typeof message === "string" && message.startsWith("data:image/"))) {
+            addImageMessage(message, false);
+          } else {
+            appendMessage(message);
+          }
+        }
+
+      });
+
+      
+
+      webrtcInstance.joinRoom(dynamicRoomId);
+
+      // Auto start call if initiator
+      setTimeout(() => {
+        webrtcInstance.startCall();
+      }, 1000);
+    };
+
+
+    function sendCallRequest() {
+      webrtcInstance?.sendCallRequest();
+      document.getElementById("ringingIndicator").classList.remove("hidden");
+      document.querySelector('[onclick="sendCallRequest()"]')?.classList.add("hidden");
+    }
+
+    function acceptCall() {
+      webrtcInstance?.acceptCall();
+      document.getElementById("incomingCall").classList.add("hidden");
+      document.querySelector('[onclick="sendCallRequest()"]')?.classList.add("hidden");
+    }
+
+    function endCall() {
+      // console.log("3333333333333333")
+      window.parent.postMessage({ type: "requestEndCallConfirmation" }, "*");
+      // webrtcInstance?.endCall();
+      // document.getElementById("ringingIndicator").classList.add("hidden");
+      // document.querySelector('[onclick="sendCallRequest()"]')?.classList.remove("hidden");
+    }
+
+    function handleEndCall() {
+      webrtcInstance?.endCall();
+      document.getElementById("ringingIndicator").classList.add("hidden");
+      document.querySelector('[onclick="sendCallRequest()"]')?.classList.remove("hidden");
+    }
+
+    function rejectCall() {
+      webrtcInstance?.rejectCall();
+      document.getElementById("incomingCall").classList.add("hidden");
+      document.getElementById("ringingIndicator").classList.add("hidden");
+      document.querySelector('[onclick="sendCallRequest()"]').classList.remove("hidden");
+    }
+
+    function updateToggleIcons() {
+      const audioIcon = document.getElementById('audioIcon');
+      const videoIcon = document.getElementById('videoIcon');
+
+      // console.log(videoIcon)
+
+      const stream = webrtcInstance?.localStream;
+      if (stream) {
+        const audioTrack = stream.getAudioTracks()[0];
+        const videoTrack = stream.getVideoTracks()[0];
+
+        // console.log(videoTrack)
+
+        if (audioIcon && audioTrack) {
+          console.log("toggleIcon")
+
+          audioIcon.setAttribute("data-lucide", audioTrack.enabled ? "mic" : "mic-off");
+        }
+
+        if (videoIcon && videoTrack) {
+          videoIcon.setAttribute("data-lucide", videoTrack.enabled ? "video" : "video-off");
+        }
+      }
+
+      lucide.createIcons();
+    }
+
+    // Ensure toggles reflect state on call start
+    function attachMediaToggleWatchers() {
+      const observer = new MutationObserver(() => {
+        if (webrtcInstance?.localStream) {
+          updateToggleIcons();
+          observer.disconnect();
+        }
+      });
+
+      observer.observe(document.getElementById("localVideo"), { attributes: true, childList: false, subtree: false });
+    }
+
+    function toggleMuteAudio() {
+      const stream = webrtcInstance?.localStream;
+      if (stream) {
+        const audioTrack = stream.getAudioTracks()[0];
+        if (audioTrack) audioTrack.enabled = !audioTrack.enabled;
+        updateToggleIcons();
+      }
+    }
+
+    function toggleMuteVideo() {
+      // console.log("toggle video", webrtcInstance.localStream)
+      const stream = webrtcInstance?.localStream;
+      if (stream) {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.enabled = !videoTrack.enabled;
+          document.getElementById("localVideo").style.opacity = videoTrack.enabled ? "1" : "0.1";
+          updateToggleIcons();
+        }
+      }
+    }
+
+    // Ensure toggles reflect state on call start
+    function attachMediaToggleWatchers() {
+      const observer = new MutationObserver(() => {
+        if (webrtcInstance?.localStream) {
+          updateToggleIcons();
+          observer.disconnect();
+        }
+      });
+
+      observer.observe(document.getElementById("localVideo"), { attributes: true, childList: false, subtree: false });
+    }
+
+
+    function startAudioCall() {
+        webrtcInstance?.toggleMuteVideo(true); // Mute video
+        webrtcInstance?.sendCallRequest();
+        document.getElementById("ringingIndicator").classList.remove("hidden");
+        document.querySelector('[onclick="sendCallRequest()"]').classList.add("hidden");
+    }
+
+    document.getElementById("openChatFromDialog").addEventListener("click", () => {
+      chatBox.classList.remove("hidden");
+      document.getElementById("chatNotificationDialog").classList.add("hidden");
+    });
+
+    document.getElementById('closeChatNotification').addEventListener('click', () => {
+      document.getElementById('chatNotificationDialog').classList.add('hidden');
+    });
+
+    function compressImage(file, maxWidth = 800) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const reader = new FileReader();
+
+        reader.onload = e => {
+          img.src = e.target.result;
+        };
+
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const scaleFactor = maxWidth / img.width;
+          canvas.width = maxWidth;
+          canvas.height = img.height * scaleFactor;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.7)); // 70% quality
+        };
+
+        img.onerror = reject;
+        reader.onerror = reject;
+
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function handleImageUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      if (!file.type.startsWith('image/')) {
+        alert('Please select a valid image file.');
+        return;
+      }
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const dynamicRoomId = urlParams.get("room");
+
+      if (!dynamicRoomId) {
+          alert("No Room ID provided! Please share the correct link.");
+          return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const imageBase64 = e.target.result;
+
+        compressImage(file).then(compressedBase64 => {
+          addImageMessage(compressedBase64, true);
+          webrtcInstance.sendMessage({
+            message: compressedBase64,
+            sender: sessionStorage.getItem('mySocketId'),
+            type: "image"
+          });
+        });
+      };
+      reader.readAsDataURL(file);
+
+      event.target.value = '';
+    }
+
+
+
+    function addImageMessage(imageSrc, isOwnMessage = false) {
+      const messages = document.getElementById('messages');
+
+      const msgWrapper = document.createElement("div");
+      msgWrapper.className = `flex items-start gap-2 text-sm max-w-md ${
+        isOwnMessage ? "self-end flex-row-reverse" : "self-start"
+      }`;
+
+      const avatar = document.createElement("div");
+      avatar.className = "w-8 h-8 flex items-center justify-center bg-gray-300 rounded-full text-sm";
+      avatar.textContent = isOwnMessage ? "🧑‍💻" : "👤";
+
+      const bubble = document.createElement("div");
+      bubble.className = `p-1 rounded-lg overflow-hidden ${
+        isOwnMessage ? "bg-blue-600" : "bg-gray-200"
+      }`;
+
+      const img = document.createElement('img');
+      img.src = imageSrc;
+      img.alt = "Sent image";
+      img.className = "rounded-lg max-w-full h-auto cursor-pointer";
+      img.style.maxHeight = '200px';
+      img.onclick = () => openImagePreview(imageSrc);
+
+      // Create timestamp like in appendMessage()
+      const time = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const timestamp = document.createElement("div");
+      timestamp.className = "text-xs mt-1 text-gray-400";
+      timestamp.textContent = time;
+
+      bubble.appendChild(img);
+      bubble.appendChild(timestamp);  // Append timestamp below the image
+      msgWrapper.appendChild(avatar);
+      msgWrapper.appendChild(bubble);
+
+      messages.appendChild(msgWrapper);
+      messages.scrollTop = messages.scrollHeight;
+
+      if (!isOwnMessage && chatBox.classList.contains("hidden")) {
+        document.getElementById("chatNotificationDialog").classList.remove("hidden");
+      }
+    }
+
+    function sendMessage() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const dynamicRoomId = urlParams.get("room");
+
+        if (!dynamicRoomId) {
+            alert("No Room ID provided! Please share the correct link.");
+            return;
+        }
+
+        const input = document.getElementById("chatInput");
+        const message = input.value.trim();
+        
+        if (message) {
+            socket.emit("chat-message", {
+                roomId: dynamicRoomId,
+                message,
+                sender: "You",
+                type: "text"
+            });
+            appendMessage(`${message}`, true);
+            input.value = "";
+        }
+    }
+
+    function openImagePreview(src) {
+      const modal = document.getElementById("imagePreviewModal");
+      const img = document.getElementById("previewImage");
+      img.src = src;
+      modal.classList.remove("hidden");
+    }
+
+    function closeImagePreview() {
+      const modal = document.getElementById("imagePreviewModal");
+      modal.classList.add("hidden");
+      document.getElementById("previewImage").src = "";
+    }
+
+    function appendMessage(text, isOwnMessage = false) {
+      const msgContainer = document.getElementById("messages");
+
+      const msgWrapper = document.createElement("div");
+      msgWrapper.className = `flex items-start gap-2 text-sm max-w-md ${
+        isOwnMessage ? "self-end flex-row-reverse" : "self-start"
+      }`;
+
+      // Avatar (use emoji or default icon)
+      const avatar = document.createElement("div");
+      avatar.className = "w-8 h-8 flex items-center justify-center bg-gray-300 rounded-full text-sm";
+      avatar.textContent = isOwnMessage ? "🧑‍💻" : "👤";
+
+      // Message bubble
+      const bubble = document.createElement("div");
+      bubble.className = `px-4 py-2 rounded-lg break-words ${
+        isOwnMessage ? "bg-blue-600 text-white" : "bg-gray-200 text-black"
+      }`;
+
+      // Timestamp
+      const time = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const timestamp = document.createElement("div");
+      timestamp.className = "text-xs mt-1 text-gray-400";
+      timestamp.textContent = time;
+
+      // Add message text
+      const messageText = document.createElement("div");
+      messageText.textContent = text;
+
+      bubble.appendChild(messageText);
+      bubble.appendChild(timestamp);
+
+      msgWrapper.appendChild(avatar);
+      msgWrapper.appendChild(bubble);
+
+      msgContainer.appendChild(msgWrapper);
+
+      // Scroll to latest
+      msgContainer.scrollTo({
+        top: msgContainer.scrollHeight,
+        behavior: "smooth",
+      });
+
+      // Show dialog if message is from others and chat box is hidden
+      if (!isOwnMessage && chatBox.classList.contains("hidden")) {
+        document.getElementById("chatNotificationDialog").classList.remove("hidden");
+      }
+    }
+
+
+  </script>
+
+  <script>
+    function toggleChat() {
+      const chatBox = document.getElementById('chatBox');
+      chatBox.classList.toggle('hidden');
+    }
+  </script>
+</body>
+</html>

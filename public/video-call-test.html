@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Iframe End Call Test</title>
+</head>
+<body>
+  <h2>Test WebRTC Iframe</h2>
+  <!-- Embedded Iframe -->
+  <!-- <iframe 
+    id="embeddedVideo" 
+    src="https://videowidget.sozodigicare.com/?room=1234" 
+    width="700" 
+    height="500"
+    allow="autoplay; encrypted-media; picture-in-picture; camera; microphone" 
+    allowfullscreen>
+  </iframe> -->
+
+  <iframe 
+    id="embeddedVideo" 
+    src="http://localhost:4000/?room=1234" 
+    width="700" 
+    height="500"
+    allow="autoplay; encrypted-media; picture-in-picture; camera; microphone" 
+    allowfullscreen>
+  </iframe>
+
+  <script>
+    // Listen for messages from iframe
+    window.addEventListener("message", (event) => {
+        console.log(event)
+        if (event.data?.type === "requestEndCallConfirmation") {
+        const confirmed = confirm("Do you really want to end the call?");
+        if (confirmed) {
+            // Now call the exposed `endCallExternally()` in the iframe
+            const iframe = document.getElementById("embeddedVideo");
+            iframe.contentWindow.postMessage({ action: "handleEndCall" }, "*");
+        }
+        }
+    });
+    </script>
+
+</body>
+</html>

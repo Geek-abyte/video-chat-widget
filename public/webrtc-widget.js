@@ -1,7 +1,8 @@
 (function () {
     window.WebRTCWidget = function (options = {}) {
         const defaultSettings = {
-            serverUrl: "https://videowidget.sozodigicare.com",
+            // serverUrl: "https://videowidget.sozodigicare.com",
+            serverUrl: "http://localhost:4000",
             roomId: null,
             container: null,
             iceServers: [

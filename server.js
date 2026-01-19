@@ -52,6 +52,21 @@ io.on("connection", (socket) => {
         socket.to(roomId).emit("call-rejected");
     });
 
+    // Doctor requests to end the call; client must consent
+    socket.on("call-end-request", ({ roomId }) => {
+        socket.to(roomId).emit("call-end-request", { requester: socket.id });
+    });
+
+    // Client responds to the end-call request (accept/deny)
+    socket.on("call-end-consent", ({ roomId, accepted }) => {
+        socket.to(roomId).emit("call-end-consent", { responder: socket.id, accepted });
+    });
+
+    // Finalize call termination for both peers
+    socket.on("call-ended", ({ roomId }) => {
+        socket.to(roomId).emit("call-ended", { sender: socket.id });
+    });
+
     // Added chat-message handler
     socket.on("chat-message", ({ roomId, message, type, sender }) => {
         // console.log(`Message from ${socket.id} in room ${roomId}: ${message} and type: ${type}`);

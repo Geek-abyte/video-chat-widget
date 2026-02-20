@@ -137,13 +137,32 @@
             };
 
             pc.ontrack = (event) => {
+                console.log("📹 Remote track received:", event.track.kind, event.streams.length);
+                
+                // Add all tracks from the event to our remote stream
                 event.streams[0].getTracks().forEach(track => {
-                    remoteStream.addTrack(track);
+                    // Check if track already exists to avoid duplicates
+                    const existingTrack = remoteStream.getTracks().find(t => t.id === track.id);
+                    if (!existingTrack) {
+                        remoteStream.addTrack(track);
+                        console.log("✅ Added remote track:", track.kind, track.id);
+                    }
                 });
 
+                // Always use the accumulated remoteStream that contains all tracks
                 const remoteVideo = document.getElementById("remoteVideo");
                 if (remoteVideo) {
-                    remoteVideo.srcObject = event.streams[0];
+                    // Always update to ensure the video element has the latest stream with all tracks
+                    remoteVideo.srcObject = remoteStream;
+                    
+                    // Ensure the video plays
+                    remoteVideo.play().catch(err => {
+                        console.warn("⚠️ Auto-play prevented, user interaction required:", err);
+                    });
+                    
+                    console.log("✅ Remote video element updated with stream containing", remoteStream.getTracks().length, "tracks");
+                } else {
+                    console.warn("⚠️ Remote video element not found!");
                 }
             };
 

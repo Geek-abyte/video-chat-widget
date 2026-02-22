@@ -82,6 +82,10 @@
     Client chose to continue the call.
   </div>
 
+  <!-- Connection Status Banner -->
+  <div id="connectionStatus" class="hidden fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full shadow-lg z-50 text-sm font-medium transition-all duration-300">
+  </div>
+
   <!-- Video Wrapper -->
   <div id="videoWrapper" class="relative w-full max-w-5xl aspect-video bg-black rounded-xl overflow-hidden">
     <video id="remoteVideo" autoplay playsinline class="absolute inset-0 w-full h-full object-cover z-0 rounded-xl"></video>
@@ -254,6 +258,30 @@
         return;
       }
 
+      const connectionStatusEl = document.getElementById("connectionStatus");
+
+      function showConnectionStatus(state) {
+        const config = {
+          waiting:            { text: "Waiting for other participant…", bg: "bg-yellow-500 text-black", show: true },
+          connecting:         { text: "Connecting…",                   bg: "bg-blue-500 text-white",    show: true },
+          connected:          { text: "Connected",                     bg: "bg-green-500 text-white",   show: true, autoHide: 3000 },
+          reconnecting:       { text: "Reconnecting…",                bg: "bg-orange-500 text-white",  show: true },
+          "peer-disconnected":{ text: "Other participant disconnected", bg: "bg-red-500 text-white",   show: true },
+          failed:             { text: "Connection failed — try refreshing", bg: "bg-red-600 text-white", show: true },
+          ended:              { text: "",                              bg: "",                           show: false }
+        };
+        const c = config[state];
+        if (!c) return;
+
+        connectionStatusEl.className = "fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full shadow-lg z-50 text-sm font-medium transition-all duration-300 " + c.bg;
+        connectionStatusEl.textContent = c.text;
+        connectionStatusEl.classList.toggle("hidden", !c.show);
+
+        if (c.autoHide) {
+          setTimeout(() => connectionStatusEl.classList.add("hidden"), c.autoHide);
+        }
+      }
+
       webrtcInstance = new WebRTCWidget({
         videoSize: 500,
         localVideoEl: localVideo,
@@ -274,6 +302,7 @@
           endCallDeclinedBanner.classList.add("hidden");
           pendingEndRequestActions = null;
           updateToggleIcons();
+          showConnectionStatus("ended");
         },
         onIncomingCall: () => {
           document.getElementById("incomingCall").classList.remove("hidden");
@@ -301,18 +330,15 @@
             endCallDeclinedBanner.classList.remove("hidden");
             setTimeout(() => endCallDeclinedBanner.classList.add("hidden"), 3000);
           }
+        },
+        onConnectionStateChange: (state) => {
+          showConnectionStatus(state);
         }
-
       });
 
-      
-
+      // The widget now handles call initiation via the user-connected event.
+      // No duplicate startCall needed — the initiator starts when the peer joins.
       webrtcInstance.joinRoom(dynamicRoomId);
-
-      // Auto start call if initiator
-      setTimeout(() => {
-        webrtcInstance.startCall();
-      }, 1000);
     };
 
 
@@ -400,19 +426,6 @@
         }
       }
     }
-
-    // Ensure toggles reflect state on call start
-    function attachMediaToggleWatchers() {
-      const observer = new MutationObserver(() => {
-        if (webrtcInstance?.localStream) {
-          updateToggleIcons();
-          observer.disconnect();
-        }
-      });
-
-      observer.observe(document.getElementById("localVideo"), { attributes: true, childList: false, subtree: false });
-    }
-
 
     function startAudioCall() {
         webrtcInstance?.toggleMuteVideo(true); // Mute video

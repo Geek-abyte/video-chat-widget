@@ -6,7 +6,7 @@
             roomId: null,
             container: null,
             role: "auto", // "auto" (initiator=doctor) | "doctor" | "client"
-            requireRemoteEndConsent: true, // when doctor ends, client must consent
+            requireRemoteEndConsent: true,
             iceServers: [
                 {
                     urls: "stun:217.65.146.157:3478"
@@ -25,11 +25,17 @@
             onMessage: () => {},
             onRemoteEndRequested: () => {},
             onEndRequestSent: () => {},
-            onEndConsentResult: () => {}
+            onEndConsentResult: () => {},
+            onConnectionStateChange: () => {}
         };
 
         let settings = { ...defaultSettings, ...options };
-        const socket = io(settings.serverUrl);
+        const socket = io(settings.serverUrl, {
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000
+        });
 
         let localStream;
         let remoteStream = new MediaStream();
@@ -37,14 +43,41 @@
         let hasCleanedUp = false;
         let waitingForRemoteEndConsent = false;
         let consentDialogElements = null;
+        let isInitiator = false;
+        let callInProgress = false;
 
         function resetCallState() {
             hasCleanedUp = false;
             waitingForRemoteEndConsent = false;
+            callInProgress = false;
             remoteStream = new MediaStream();
             hideFallbackConsentDialog();
         }
 
+        function updateConnectionStatus(state) {
+            settings.onConnectionStateChange(state);
+        }
+
+        // --- Reconnection: rejoin the room if socket reconnects mid-call ---
+        socket.on("connect", () => {
+            console.log("🔌 Socket connected:", socket.id);
+            if (settings.roomId) {
+                console.log("🔄 Reconnected — rejoining room:", settings.roomId);
+                socket.emit("join-room", settings.roomId);
+            }
+        });
+
+        socket.on("disconnect", (reason) => {
+            console.warn("⚡ Socket disconnected:", reason);
+            updateConnectionStatus("reconnecting");
+        });
+
+        socket.on("reconnect_failed", () => {
+            console.error("❌ Socket reconnection failed");
+            updateConnectionStatus("failed");
+        });
+
+        // --- Consent dialog helpers ---
         function ensureFallbackConsentDialog() {
             if (consentDialogElements) return consentDialogElements;
 
@@ -112,20 +145,40 @@
             }
         }
 
+        // --- Room & Signaling ---
         function joinRoom(roomId) {
             settings.roomId = roomId;
             socket.emit("join-room", roomId);
 
             socket.once("joined-room", ({ initiator }) => {
+                isInitiator = initiator;
                 if (settings.role === "auto") {
                     settings.role = initiator ? "doctor" : "client";
                 }
-                console.log(`🧩 Joined room ${roomId} | Initiator: ${initiator}`);
-                if (initiator) {
-                    startCall();
+                console.log(`🧩 Joined room ${roomId} | Role: ${settings.role} | Initiator: ${initiator}`);
+                updateConnectionStatus("waiting");
+
+                if (!initiator) {
+                    // Non-initiator waits for the offer; initiator waits for user-connected
+                    console.log("⏳ Waiting for the other participant…");
                 }
             });
         }
+
+        // When a second user joins, the initiator starts the call
+        socket.on("user-connected", (userId) => {
+            console.log("👤 Another user connected to room:", userId);
+            if (isInitiator && !callInProgress) {
+                console.log("🚀 Peer joined — starting call as initiator");
+                startCall();
+            }
+        });
+
+        // When a user disconnects from the room
+        socket.on("user-disconnected", ({ socketId }) => {
+            console.warn("👤 Peer disconnected from room:", socketId);
+            updateConnectionStatus("peer-disconnected");
+        });
 
         function createPeerConnection() {
             const pc = new RTCPeerConnection({ iceServers: settings.iceServers });
@@ -136,31 +189,54 @@
                 }
             };
 
+            // Monitor ICE connection state for reliability
+            pc.oniceconnectionstatechange = () => {
+                const state = pc.iceConnectionState;
+                console.log("🧊 ICE connection state:", state);
+
+                switch (state) {
+                    case "checking":
+                        updateConnectionStatus("connecting");
+                        break;
+                    case "connected":
+                    case "completed":
+                        updateConnectionStatus("connected");
+                        break;
+                    case "disconnected":
+                        updateConnectionStatus("peer-disconnected");
+                        // Attempt recovery — ICE can often self-heal
+                        setTimeout(() => {
+                            if (pc && pc.iceConnectionState === "disconnected") {
+                                console.warn("🔄 ICE still disconnected, attempting restart…");
+                                restartIce();
+                            }
+                        }, 3000);
+                        break;
+                    case "failed":
+                        console.error("❌ ICE connection failed");
+                        updateConnectionStatus("failed");
+                        restartIce();
+                        break;
+                    case "closed":
+                        updateConnectionStatus("ended");
+                        break;
+                }
+            };
+
             pc.ontrack = (event) => {
-                console.log("📹 Remote track received:", event.track.kind, event.streams.length);
-                
-                // Add all tracks from the event to our remote stream
+                console.log("📹 Remote track received:", event.track.kind);
+
                 event.streams[0].getTracks().forEach(track => {
-                    // Check if track already exists to avoid duplicates
-                    const existingTrack = remoteStream.getTracks().find(t => t.id === track.id);
-                    if (!existingTrack) {
+                    const exists = remoteStream.getTracks().find(t => t.id === track.id);
+                    if (!exists) {
                         remoteStream.addTrack(track);
-                        console.log("✅ Added remote track:", track.kind, track.id);
                     }
                 });
 
-                // Always use the accumulated remoteStream that contains all tracks
                 const remoteVideo = document.getElementById("remoteVideo");
                 if (remoteVideo) {
-                    // Always update to ensure the video element has the latest stream with all tracks
                     remoteVideo.srcObject = remoteStream;
-                    
-                    // Ensure the video plays
-                    remoteVideo.play().catch(err => {
-                        console.warn("⚠️ Auto-play prevented, user interaction required:", err);
-                    });
-                    
-                    console.log("✅ Remote video element updated with stream containing", remoteStream.getTracks().length, "tracks");
+                    remoteVideo.play().catch(() => {});
                 } else {
                     console.warn("⚠️ Remote video element not found!");
                 }
@@ -169,13 +245,32 @@
             return pc;
         }
 
+        async function restartIce() {
+            if (!peerConnection || !settings.roomId) return;
+            try {
+                const offer = await peerConnection.createOffer({ iceRestart: true });
+                await peerConnection.setLocalDescription(offer);
+                socket.emit("offer", { roomId: settings.roomId, offer });
+                console.log("🔄 ICE restart offer sent");
+            } catch (err) {
+                console.error("❌ ICE restart failed:", err);
+            }
+        }
+
         async function startCall() {
             if (!settings.roomId) {
-                console.error("❌ Room ID not set. Call joinRoom(roomId) first.");
+                console.error("❌ Room ID not set.");
+                return;
+            }
+            if (callInProgress) {
+                console.log("⏭️ Call already in progress, skipping duplicate startCall");
                 return;
             }
 
+            callInProgress = true;
             resetCallState();
+            callInProgress = true; // resetCallState clears this, so re-set
+            updateConnectionStatus("connecting");
 
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
@@ -190,7 +285,6 @@
                 const localVideo = document.getElementById("localVideo");
                 if (localVideo) {
                     localVideo.srcObject = localStream;
-                    console.log("✅ Local video stream set.");
                 } else {
                     console.warn("⚠️ Local video element not found!");
                 }
@@ -206,6 +300,8 @@
 
             } catch (error) {
                 console.error("❌ Error accessing media devices:", error);
+                callInProgress = false;
+                updateConnectionStatus("failed");
             }
         }
 
@@ -213,10 +309,12 @@
             if (hasCleanedUp) return;
             hasCleanedUp = true;
             waitingForRemoteEndConsent = false;
+            callInProgress = false;
 
             if (peerConnection) {
                 peerConnection.onicecandidate = null;
                 peerConnection.ontrack = null;
+                peerConnection.oniceconnectionstatechange = null;
                 peerConnection.close();
             }
 
@@ -242,6 +340,7 @@
             }
 
             document.querySelector('[onclick="sendCallRequest()"]')?.classList.remove("hidden");
+            updateConnectionStatus("ended");
             settings.onCallEnded();
         }
 
@@ -256,7 +355,6 @@
             waitingForRemoteEndConsent = false;
             socket.emit("call-end-consent", { roomId: settings.roomId, accepted });
             if (accepted) {
-                // Proactively notify peer before cleanup in case socket disconnects on teardown.
                 if (settings.roomId) {
                     socket.emit("call-ended", { roomId: settings.roomId });
                 }
@@ -265,10 +363,7 @@
         }
 
         function endCall() {
-            // If consent is required, always request it before ending.
-            // This covers all doctor end-buttons and any custom wiring.
             if (settings.requireRemoteEndConsent) {
-                console.log("🔒 Requesting remote consent to end call...");
                 requestRemoteConsentToEndCall();
                 return;
             }
@@ -323,31 +418,45 @@
         socket.on("chat-message", (data) => {
             if (typeof settings.onMessage === "function") {
                 settings.onMessage(data);
-            } else {
-                console.log(`[📨] Message from ${data?.sender || 'peer'}:`, data?.message);
             }
         });
 
         socket.on("offer", async ({ offer }) => {
-            console.log("📩 Incoming call...");
+            console.log("📩 Incoming offer…");
 
+            // Prevent processing offers if we already have an active call as initiator
+            // (this avoids collisions when both sides send offers)
+            if (callInProgress && isInitiator) {
+                console.log("⏭️ Already in a call as initiator, ignoring duplicate offer");
+                return;
+            }
+
+            callInProgress = true;
             resetCallState();
+            callInProgress = true;
+            updateConnectionStatus("connecting");
+
             peerConnection = createPeerConnection();
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
 
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
 
-            const localVideo = document.getElementById("localVideo");
-            if (localVideo) {
-                localVideo.srcObject = localStream;
-                console.log("✅ Local video stream set (receiver).");
+                const localVideo = document.getElementById("localVideo");
+                if (localVideo) {
+                    localVideo.srcObject = localStream;
+                }
+
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.emit("answer", { roomId: settings.roomId, answer });
+            } catch (error) {
+                console.error("❌ Error accessing media for answer:", error);
+                callInProgress = false;
+                updateConnectionStatus("failed");
             }
-
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit("answer", { roomId: settings.roomId, answer });
         });
 
         socket.on("answer", async ({ answer }) => {
@@ -359,7 +468,9 @@
 
         socket.on("ice-candidate", ({ candidate }) => {
             if (peerConnection) {
-                peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
+                    console.warn("⚠️ Failed to add ICE candidate:", err);
+                });
             }
         });
 
@@ -370,7 +481,6 @@
                     reject: () => respondToEndRequest(false)
                 });
             } else {
-                // Built-in modal to force explicit consent on the client side.
                 showFallbackConsentDialog(
                     () => respondToEndRequest(true),
                     () => respondToEndRequest(false)
@@ -382,7 +492,6 @@
             waitingForRemoteEndConsent = false;
             settings.onEndConsentResult(accepted);
             if (accepted) {
-                // Ensure both sides get torn down, and send final call-ended to peer.
                 if (settings.roomId) {
                     socket.emit("call-ended", { roomId: settings.roomId });
                 }
@@ -431,6 +540,7 @@
             toggleMuteVideo,
             joinRoom,
             sendMessage,
+            restartIce,
             get localStream() {
                 return localStream;
             }

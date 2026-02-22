@@ -55,6 +55,12 @@ io.on("connection", (socket) => {
             rooms[roomId] = [];
         }
 
+        // Prevent duplicate entries (e.g. on reconnect)
+        if (rooms[roomId].includes(socket.id)) {
+            socket.emit("joined-room", { initiator: false });
+            return;
+        }
+
         if (rooms[roomId].length >= MAX_ROOM_SIZE) {
             socket.emit("room-error", { message: "Room is full" });
             socket.leave(roomId);
@@ -133,10 +139,15 @@ io.on("connection", (socket) => {
     socket.on("disconnect", () => {
         console.log("User disconnected:", socket.id);
 
-        // Remove socket from any rooms it's part of
         for (const roomId in rooms) {
+            if (!rooms[roomId].includes(socket.id)) continue;
+
             rooms[roomId] = rooms[roomId].filter(id => id !== socket.id);
-            if (rooms[roomId].length === 0) {
+
+            // Notify remaining participants that a peer left
+            if (rooms[roomId].length > 0) {
+                socket.to(roomId).emit("user-disconnected", { socketId: socket.id });
+            } else {
                 delete rooms[roomId];
             }
         }

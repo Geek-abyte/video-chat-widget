@@ -9,7 +9,7 @@ const app = express();
 const server = http.createServer(app);
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ||
-  "http://localhost:3000,http://localhost:4000")
+  "http://localhost:3000,http://localhost:4000,https://videowidget.sozodigicare.com")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);

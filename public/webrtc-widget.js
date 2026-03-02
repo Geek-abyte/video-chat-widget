@@ -45,11 +45,13 @@
         let consentDialogElements = null;
         let isInitiator = false;
         let callInProgress = false;
+        let _endInitiatedByMe = false;
 
         function resetCallState() {
             hasCleanedUp = false;
             waitingForRemoteEndConsent = false;
             callInProgress = false;
+            _endInitiatedByMe = false;
             remoteStream = new MediaStream();
             hideFallbackConsentDialog();
         }
@@ -226,20 +228,22 @@
             pc.ontrack = (event) => {
                 console.log("📹 Remote track received:", event.track.kind);
 
-                event.streams[0].getTracks().forEach(track => {
-                    const exists = remoteStream.getTracks().find(t => t.id === track.id);
-                    if (!exists) {
-                        remoteStream.addTrack(track);
-                    }
-                });
-
-                const remoteVideo = document.getElementById("remoteVideo");
-                if (remoteVideo) {
-                    remoteVideo.srcObject = remoteStream;
-                    remoteVideo.play().catch(() => {});
-                } else {
+                const remoteVideoEl = document.getElementById("remoteVideo");
+                if (!remoteVideoEl) {
                     console.warn("⚠️ Remote video element not found!");
+                    return;
                 }
+
+                if (event.streams && event.streams[0]) {
+                    remoteVideoEl.srcObject = event.streams[0];
+                } else {
+                    if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                        remoteStream.addTrack(event.track);
+                    }
+                    remoteVideoEl.srcObject = remoteStream;
+                }
+
+                remoteVideoEl.play().catch(err => console.warn("⚠️ Remote video play:", err));
             };
 
             return pc;
@@ -285,6 +289,7 @@
                 const localVideo = document.getElementById("localVideo");
                 if (localVideo) {
                     localVideo.srcObject = localStream;
+                    localVideo.play().catch(err => console.warn("⚠️ Local video play:", err));
                 } else {
                     console.warn("⚠️ Local video element not found!");
                 }
@@ -308,6 +313,10 @@
         function performEndCallCleanup({ notifyPeer = false } = {}) {
             if (hasCleanedUp) return;
             hasCleanedUp = true;
+
+            const initiatedByMe = _endInitiatedByMe;
+            _endInitiatedByMe = false;
+
             waitingForRemoteEndConsent = false;
             callInProgress = false;
 
@@ -341,7 +350,7 @@
 
             document.querySelector('[onclick="sendCallRequest()"]')?.classList.remove("hidden");
             updateConnectionStatus("ended");
-            settings.onCallEnded();
+            settings.onCallEnded({ initiatedByMe });
         }
 
         function requestRemoteConsentToEndCall() {
@@ -363,6 +372,13 @@
         }
 
         function endCall() {
+            _endInitiatedByMe = true;
+            // Client can end the call immediately — no consent needed
+            if (settings.role === "client") {
+                performEndCallCleanup({ notifyPeer: true });
+                return;
+            }
+            // Doctor must request consent from the client
             if (settings.requireRemoteEndConsent) {
                 requestRemoteConsentToEndCall();
                 return;
@@ -409,9 +425,10 @@
             if (!settings.roomId || !data) return;
 
             const messagePayload = typeof data === 'string'
-                ? { message: data, type: "text", sender: sessionStorage.getItem("mySocketId") }
+                ? { message: data, type: "text", sender: socket.id }
                 : data;
 
+            if (!messagePayload.sender) messagePayload.sender = socket.id;
             socket.emit("chat-message", { roomId: settings.roomId, ...messagePayload });
         }
 
@@ -440,11 +457,19 @@
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
 
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: true
+                });
 
                 const localVideo = document.getElementById("localVideo");
                 if (localVideo) {
                     localVideo.srcObject = localStream;
+                    localVideo.play().catch(err => console.warn("⚠️ Local video play:", err));
                 }
 
                 localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
@@ -536,6 +561,7 @@
             rejectCall,
             startCall,
             endCall,
+            forceEndCall: () => performEndCallCleanup({ notifyPeer: true }),
             toggleMuteAudio,
             toggleMuteVideo,
             joinRoom,
@@ -543,6 +569,9 @@
             restartIce,
             get localStream() {
                 return localStream;
+            },
+            get socketId() {
+                return socket.id;
             }
         };
     };

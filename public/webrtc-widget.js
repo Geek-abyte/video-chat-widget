@@ -31,6 +31,7 @@
 
         let settings = { ...defaultSettings, ...options };
         const socket = io(settings.serverUrl, {
+            transports: ["websocket"],
             reconnection: true,
             reconnectionAttempts: 10,
             reconnectionDelay: 1000,
